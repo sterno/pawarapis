@@ -122,9 +122,9 @@ def get_candidate(candidate_nick):
 # might as well have something on the home page, eh?
 @app.route('/')
 def index():
-    hits = int(redis.get('indexhits'))
+    hits = redis.get('indexhits')
 
-    if (hits > 100):
+    if (hits and int(hits) > 100):
         strang = 'You know why you visited this time, but what do you think the other {} visits were about?'.format(hits - 1)
     else:
         strang = 'My, how nice of you to visit.'
