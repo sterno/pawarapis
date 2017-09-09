@@ -107,7 +107,8 @@ def get_candidate(candidate_nick):
         # if data not found in redis:
         else:
             # make API call
-            response = requests.get('https://www.illinoissunshine.org/api/expenditures/?committee_id={}'.format(committeeId))
+            # assume there will never be more than 1,000,000 expenditures (but you never know, amirite?)
+            response = requests.get('https://www.illinoissunshine.org/api/expenditures/?limit=1000000&committee_id={}'.format(committeeId))
 
             # convert response to JSON
             responseJSON = response.json()
