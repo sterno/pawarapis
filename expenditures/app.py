@@ -3,6 +3,8 @@
 from flask import Flask, jsonify
 from flask_cors import CORS, cross_origin
 from redis import Redis
+
+import datetime as dt
 import json
 import requests
 
@@ -72,7 +74,28 @@ candidates = [
     },
 ]
 
+# how long our cached items last
 redisDuration = 3600 # one hour
+# assume there will never be more than 1,000,000 expenditures (but you never know, amirite?)
+apiLimit = 1000000
+dateFormat = '%Y-%m-%dT%H:%M:%S'
+
+def calculateSpendingDays(firstExpenditure):
+    now = dt.datetime.now()
+    then = dt.datetime.strptime(firstExpenditure, dateFormat)
+
+    diff = now - then
+
+    return diff.days
+
+
+def calculateSpentPerDay(days, total):
+    return total / days
+
+
+def calculateSpentPerSecond(perDay):
+    return perDay / 86400
+
 
 # convenience during development/testing
 @app.route('/clear', methods=['GET'])
@@ -107,11 +130,28 @@ def get_candidate(candidate_nick):
         # if data not found in redis:
         else:
             # make API call
-            # assume there will never be more than 1,000,000 expenditures (but you never know, amirite?)
-            response = requests.get('https://www.illinoissunshine.org/api/expenditures/?limit=1000000&committee_id={}'.format(committeeId))
+            response = requests.get('https://www.illinoissunshine.org/api/expenditures/?limit={}&committee_id={}'.format(apiLimit, committeeId))
 
-            # convert response to JSON
-            responseJSON = response.json()
+            apiData = json.loads(json.dumps(response.json()))
+
+            total = 0.0
+
+            for expenditure in apiData['objects'][0]['expenditures']:
+                total = total + float(expenditure['amount'])
+
+            firstExpenditure = apiData['objects'][0]['expenditures'][-1]['expended_date']
+            spendingDays = calculateSpendingDays(firstExpenditure)
+            spentPerDay = calculateSpentPerDay(spendingDays, total)
+
+            responseJSON = {
+                'total': "{0:.2f}".format(total),
+                'expendituresCount': len(apiData['objects'][0]['expenditures']),
+                'firstExpenditure': firstExpenditure,
+                'spendingDays': spendingDays,
+                'spentPerDay': "{0:.2f}".format(spentPerDay),
+                'spentPerSecond': "{0:.2f}".format(calculateSpentPerSecond(spentPerDay)),
+                'timestamp': dt.datetime.strftime(dt.datetime.now(), dateFormat)
+            }
 
             # store API call results in redis for one hour
             redis.setex(candidate_nick, json.dumps(responseJSON), redisDuration)
