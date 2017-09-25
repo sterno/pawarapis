@@ -151,32 +151,23 @@ def get_random_fact():
     hours, mins = divmod(mins, 60)
     days, hours = divmod(hours, 24)
 
-    text = "#RaunerSpends the %s in"%rand_fact['item']
+    text = "#RaunerSpends the %s in "%rand_fact['item']
     prevNum = False
+    timecomponents = []
     if days:
-        text += " %d days"%days
-        prevNum = True
+        timecomponents.append("%d days"%days)
     if hours:
-        if prevNum:
-            text += ','
-        text += " %dhrs"%hours
-        prevNum = True
+        timecomponents.append("%dhrs"%hours)
     if mins:
-        if prevNum:
-            text += ','
-        text += " %dmins"%mins
-        prevNum = True
+        timecomponents.append("%dmins"%mins)
     if secs:
-        if prevNum:
-            text += ','
-        text += " %ds"%secs
+        timecomponents.append("%ds"%secs)
+    text += ", ".join(timecomponents)
 
     text += " [%s]"%rand_fact['source']
 
-
     resp = {'text':text}
     return jsonify(resp)
-
 
 
 
