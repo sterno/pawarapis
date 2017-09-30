@@ -2,24 +2,30 @@
 
 from flask import Flask, jsonify
 from flask_cors import CORS, cross_origin
-from redis import Redis
 import firebase_admin
 from firebase_admin import credentials, db
 
 
-import collections
+
 import datetime as dt
 import json
 import random
 import requests
 import os
+import time
+import logging
+
+import boto3
+dynamodb = boto3.resource('dynamodb')
+cache = dynamodb.Table('expenditures_cache')
+
 
 app = Flask(__name__)
-redis = Redis(host='redis', port=6379)
-cred = credentials.Certificate('/code/firebaseServiceAccountKey.json')
+
+cred = firebase_admin.credentials.Certificate(json.loads(os.environ['cert']));
 firebase_app = firebase_admin.initialize_app(cred, {
     'databaseURL': 'https://illinois-calc.firebaseio.com/'
-    })
+})
 
 candidates = [
     {
@@ -119,7 +125,11 @@ def plural(word, count):
 @app.route('/clear', methods=['GET'])
 def clear():
     for c in candidates:
-        redis.delete(c.get('id'))
+        cache.delete_item(
+            Key={
+                'id': c.get('id')
+            }
+        )
 
     return 'cache cleared'
 
@@ -130,6 +140,7 @@ def get_random_fact():
     # pick a random fact from the db
     # pick a random candidate and get their numbers
     # calculate stuff and return the text
+
     facts_ref = db.reference('facts')
     lastfact = facts_ref.order_by_key().limit_to_last(1).get()
     for key in lastfact:
@@ -138,6 +149,8 @@ def get_random_fact():
 
     fact_ref = db.reference('facts/%d'%rand_fact_id)
     rand_fact = fact_ref.get()
+
+
 
     cand_expenditures = get_cand_expenditures('rauner')
 
@@ -167,6 +180,8 @@ def get_random_fact():
     text += " [%s]"%rand_fact['source']
 
     resp = {'text':text}
+
+
     return jsonify(resp)
 
 
@@ -185,10 +200,17 @@ def get_cand_expenditures(candidate_nick):
 
     if committeeId:
         # try to pull data from redis
-        cachedJSON = redis.get(candidate_nick)
+        # cachedJSON = redis.get(candidate_nick)
+        response = cache.get_item(
+            Key={
+                'id': candidate_nick
+            }
+        )
 
         # if data found in redis, use it
-        if cachedJSON:
+        if 'Item' in response:
+            item = response['Item'];
+            cachedJSON = item['json']
             responseJSON = json.loads(cachedJSON)
         # if data not found in redis:
         else:
@@ -217,7 +239,16 @@ def get_cand_expenditures(candidate_nick):
             }
 
             # store API call results in redis for one hour
-            redis.setex(candidate_nick, json.dumps(responseJSON), redisDuration)
+            # redis.setex(candidate_nick, json.dumps(responseJSON), redisDuration)
+
+            expireTime = int(time.time())+redisDuration;
+            cache.put_item(
+                Item={
+                    'id': candidate_nick,
+                    'ttl': expireTime,
+                    'json': json.dumps(responseJSON)
+                }
+            )
     return responseJSON
 
 
@@ -230,18 +261,18 @@ def get_candidate(candidate_nick):
 
 
 # might as well have something on the home page, eh?
-@app.route('/')
-def index():
-    hits = redis.get('indexhits')
-
-    if (hits and int(hits) > 2):
-        strang = 'You know why you visited this time, but what do you think the other {} visits were about?'.format(int(hits) - 1)
-    else:
-        strang = 'My, how nice of you to visit.'
-
-    redis.incr('indexhits')
-
-    return strang
+#@app.route('/')
+#def index():
+#    hits = redis.get('indexhits')
+#
+#    if (hits and int(hits) > 2):
+#        strang = 'You know why you visited this time, but what do you think the other {} visits were about?'.format(int(hits) - 1)
+#    else:
+#        strang = 'My, how nice of you to visit.'
+#
+#    redis.incr('indexhits')
+#
+#    return strang
 
 
 if __name__ == "__main__":
