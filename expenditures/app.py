@@ -5,8 +5,6 @@ from flask_cors import CORS, cross_origin
 import firebase_admin
 from firebase_admin import credentials, db
 
-
-
 import datetime as dt
 import json
 import random
@@ -18,6 +16,7 @@ import logging
 import boto3
 dynamodb = boto3.resource('dynamodb')
 cache = dynamodb.Table('expenditures_cache')
+fact_oftheday_table = dynamodb.Table('fact_of_the_day')
 
 
 app = Flask(__name__)
@@ -134,29 +133,49 @@ def clear():
     return 'cache cleared'
 
 
-@app.route('/expenditures/facts/random', methods=['GET'])
-@cross_origin()
-def get_random_fact():
-    # pick a random fact from the db
-    # pick a random candidate and get their numbers
-    # calculate stuff and return the text
+def retrieve_random_fact(of_the_day):
+    rand_fact = None
 
-    facts_ref = db.reference('facts')
-    lastfact = facts_ref.order_by_key().limit_to_last(1).get()
-    for key in lastfact:
-        max_fact_id = key
-    rand_fact_id = random.randrange(1, int(max_fact_id))
+    if of_the_day:
+        # Check the cache first
+        fact_response = fact_oftheday_table.get_item(
+            Key={
+                'id': '1'
+            }
+        )
+        if 'Item' in fact_response:
+            item = fact_response['Item'];
+            cached_json = item['json']
+            rand_fact = json.loads(cached_json)
 
-    fact_ref = db.reference('facts/%d'%rand_fact_id)
-    rand_fact = fact_ref.get()
+    if not rand_fact:
+        facts_ref = db.reference('facts')
+        lastfact = facts_ref.order_by_key().limit_to_last(1).get()
+        for key in lastfact:
+            max_fact_id = key
+        rand_fact_id = random.randrange(1, int(max_fact_id))
 
+        fact_ref = db.reference('facts/%d' % rand_fact_id)
+        rand_fact = fact_ref.get()
+        if of_the_day:
+            # Store in dynamo since we missed the cache
+            expireTime = int((dt.datetime.today() + dt.timedelta(days=1)).timestamp())
+            fact_oftheday_table.put_item(
+                Item={
+                    'id': '1',
+                    'ttl': expireTime,
+                    'json': json.dumps(rand_fact)
+                }
+            )
 
+    return rand_fact
 
+def generate_response (rand_fact):
     cand_expenditures = get_cand_expenditures('rauner')
 
     # get it before rounding
     spentPerDay = calculateSpentPerDay(float(cand_expenditures['spendingDays']),
-            float(cand_expenditures['total']))
+                                       float(cand_expenditures['total']))
     spentPerSecond = calculateSpentPerSecond(spentPerDay)
     secondsPerFactUnit = float(rand_fact['amount']) / spentPerSecond
 
@@ -164,25 +183,46 @@ def get_random_fact():
     hours, mins = divmod(mins, 60)
     days, hours = divmod(hours, 24)
 
-    text = "#RaunerSpends the %s in "%rand_fact['item']
+    text = "#RaunerSpends the %s in " % rand_fact['item']
     prevNum = False
     timecomponents = []
     if days:
-        timecomponents.append("%d days"%days)
+        timecomponents.append("%d days" % days)
     if hours:
-        timecomponents.append("%dhrs"%hours)
+        timecomponents.append("%dhrs" % hours)
     if mins:
-        timecomponents.append("%dmins"%mins)
+        timecomponents.append("%dmins" % mins)
     if secs:
-        timecomponents.append("%ds"%secs)
+        timecomponents.append("%ds" % secs)
     text += ", ".join(timecomponents)
 
-    text += " [%s]"%rand_fact['source']
+    text += " [%s]" % rand_fact['source']
 
-    resp = {'text':text}
+    resp = {'text': text}
+
+    return resp
 
 
+@app.route('/expenditures/facts/random/oftheday', methods=['GET'])
+@cross_origin()
+def get_random_fact_oftheday():
+    rand_fact = retrieve_random_fact(True)
+    resp = generate_response(rand_fact)
     return jsonify(resp)
+
+
+@app.route('/expenditures/facts/random', methods=['GET'])
+@cross_origin()
+def get_random_fact():
+    # pick a random fact from the db
+    # pick a random candidate and get their numbers
+    # calculate stuff and return the text
+
+
+    rand_fact = retrieve_random_fact(False)
+    resp = generate_response(rand_fact)
+    return jsonify(resp)
+
 
 
 
@@ -241,7 +281,7 @@ def get_cand_expenditures(candidate_nick):
             # store API call results in redis for one hour
             # redis.setex(candidate_nick, json.dumps(responseJSON), redisDuration)
 
-            expireTime = int(time.time())+redisDuration;
+            expireTime = int(time.time())+(redisDuration*1000);
             cache.put_item(
                 Item={
                     'id': candidate_nick,
