@@ -11,11 +11,7 @@ virtualenv expenditures
 source expenditures/bin/activate
 
 # Install packages
-pip install zappa
-pip install flask
-pip install flask_cors
-pip install boto3
-pip install firebase_admin
+pip install -r expenditures/requirements.txt
 
 # Start Zappa Update
 python appendFirebaseCert.py

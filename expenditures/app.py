@@ -136,7 +136,9 @@ def clear():
 def retrieve_random_fact(of_the_day):
     rand_fact = None
 
+    used_facts = []
     if of_the_day:
+        # ID 1 is the cached result and 2 is the list of used facts
         # Check the cache first
         fact_response = fact_oftheday_table.get_item(
             Key={
@@ -148,15 +150,36 @@ def retrieve_random_fact(of_the_day):
             cached_json = item['json']
             rand_fact = json.loads(cached_json)
 
+        used_fact_response = fact_oftheday_table.get_item(
+            Key={
+                'id': '2'
+            }
+        )
+        if 'Item' in used_fact_response:
+            item = used_fact_response['Item'];
+            cached_json = item['json']
+            used_facts = json.loads(cached_json)
+
     if not rand_fact:
         facts_ref = db.reference('facts')
-        lastfact = facts_ref.order_by_key().limit_to_last(1).get()
-        for key in lastfact:
-            max_fact_id = key
-        rand_fact_id = random.randrange(1, int(max_fact_id))
+        #weirdly, leaving out the start_at makes it return a list
+        #instead of a dict so we can't see the keys
+        allfacts = facts_ref.order_by_key().start_at('0').get()
+        all_fact_ids = []
+        for key, value in allfacts.items():
+            all_fact_ids.append(key)
 
-        fact_ref = db.reference('facts/%d' % rand_fact_id)
-        rand_fact = fact_ref.get()
+        # if we don't have any facts left, then reset the used list
+        if len(used_facts) >= len(all_fact_ids):
+            used_facts = []
+        for used_fact_key in used_facts:
+            all_fact_ids.remove(used_fact_key)
+
+        rand_fact_id = random.choice(all_fact_ids)
+        used_facts.append(rand_fact_id)
+
+        rand_fact = allfacts[rand_fact_id]
+
         if of_the_day:
             # Store in dynamo since we missed the cache
             expireTime = int((dt.datetime.today() + dt.timedelta(days=1)).timestamp())
@@ -165,6 +188,12 @@ def retrieve_random_fact(of_the_day):
                     'id': '1',
                     'ttl': expireTime,
                     'json': json.dumps(rand_fact)
+                }
+            )
+            fact_oftheday_table.put_item(
+                Item={
+                    'id': '2',
+                    'json': json.dumps(used_facts)
                 }
             )
 
