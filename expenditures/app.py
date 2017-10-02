@@ -2,24 +2,29 @@
 
 from flask import Flask, jsonify
 from flask_cors import CORS, cross_origin
-from redis import Redis
 import firebase_admin
 from firebase_admin import credentials, db
 
-
-import collections
 import datetime as dt
 import json
 import random
 import requests
 import os
+import time
+import logging
+
+import boto3
+dynamodb = boto3.resource('dynamodb')
+cache = dynamodb.Table('expenditures_cache')
+fact_oftheday_table = dynamodb.Table('fact_of_the_day')
+
 
 app = Flask(__name__)
-redis = Redis(host='redis', port=6379)
-cred = credentials.Certificate('/code/firebaseServiceAccountKey.json')
+
+cred = firebase_admin.credentials.Certificate(json.loads(os.environ['cert']));
 firebase_app = firebase_admin.initialize_app(cred, {
     'databaseURL': 'https://illinois-calc.firebaseio.com/'
-    })
+})
 
 candidates = [
     {
@@ -119,9 +124,91 @@ def plural(word, count):
 @app.route('/clear', methods=['GET'])
 def clear():
     for c in candidates:
-        redis.delete(c.get('id'))
+        cache.delete_item(
+            Key={
+                'id': c.get('id')
+            }
+        )
 
     return 'cache cleared'
+
+
+def retrieve_random_fact(of_the_day):
+    rand_fact = None
+
+    if of_the_day:
+        # Check the cache first
+        fact_response = fact_oftheday_table.get_item(
+            Key={
+                'id': '1'
+            }
+        )
+        if 'Item' in fact_response:
+            item = fact_response['Item'];
+            cached_json = item['json']
+            rand_fact = json.loads(cached_json)
+
+    if not rand_fact:
+        facts_ref = db.reference('facts')
+        lastfact = facts_ref.order_by_key().limit_to_last(1).get()
+        for key in lastfact:
+            max_fact_id = key
+        rand_fact_id = random.randrange(1, int(max_fact_id))
+
+        fact_ref = db.reference('facts/%d' % rand_fact_id)
+        rand_fact = fact_ref.get()
+        if of_the_day:
+            # Store in dynamo since we missed the cache
+            expireTime = int((dt.datetime.today() + dt.timedelta(days=1)).timestamp())
+            fact_oftheday_table.put_item(
+                Item={
+                    'id': '1',
+                    'ttl': expireTime,
+                    'json': json.dumps(rand_fact)
+                }
+            )
+
+    return rand_fact
+
+def generate_response (rand_fact):
+    cand_expenditures = get_cand_expenditures('rauner')
+
+    # get it before rounding
+    spentPerDay = calculateSpentPerDay(float(cand_expenditures['spendingDays']),
+                                       float(cand_expenditures['total']))
+    spentPerSecond = calculateSpentPerSecond(spentPerDay)
+    secondsPerFactUnit = float(rand_fact['amount']) / spentPerSecond
+
+    mins, secs = divmod(secondsPerFactUnit, 60)
+    hours, mins = divmod(mins, 60)
+    days, hours = divmod(hours, 24)
+
+    text = "#RaunerSpends the %s in " % rand_fact['item']
+    prevNum = False
+    timecomponents = []
+    if days:
+        timecomponents.append("%d days" % days)
+    if hours:
+        timecomponents.append("%dhrs" % hours)
+    if mins:
+        timecomponents.append("%dmins" % mins)
+    if secs:
+        timecomponents.append("%ds" % secs)
+    text += ", ".join(timecomponents)
+
+    text += " [%s]" % rand_fact['source']
+
+    resp = {'text': text}
+
+    return resp
+
+
+@app.route('/expenditures/facts/random/oftheday', methods=['GET'])
+@cross_origin()
+def get_random_fact_oftheday():
+    rand_fact = retrieve_random_fact(True)
+    resp = generate_response(rand_fact)
+    return jsonify(resp)
 
 
 @app.route('/expenditures/facts/random', methods=['GET'])
@@ -130,44 +217,12 @@ def get_random_fact():
     # pick a random fact from the db
     # pick a random candidate and get their numbers
     # calculate stuff and return the text
-    facts_ref = db.reference('facts')
-    lastfact = facts_ref.order_by_key().limit_to_last(1).get()
-    for key in lastfact:
-        max_fact_id = key
-    rand_fact_id = random.randrange(1, int(max_fact_id))
 
-    fact_ref = db.reference('facts/%d'%rand_fact_id)
-    rand_fact = fact_ref.get()
 
-    cand_expenditures = get_cand_expenditures('rauner')
-
-    # get it before rounding
-    spentPerDay = calculateSpentPerDay(float(cand_expenditures['spendingDays']),
-            float(cand_expenditures['total']))
-    spentPerSecond = calculateSpentPerSecond(spentPerDay)
-    secondsPerFactUnit = float(rand_fact['amount']) / spentPerSecond
-
-    mins, secs = divmod(secondsPerFactUnit, 60)
-    hours, mins = divmod(mins, 60)
-    days, hours = divmod(hours, 24)
-
-    text = "#RaunerSpends the %s in "%rand_fact['item']
-    prevNum = False
-    timecomponents = []
-    if days:
-        timecomponents.append("%d days"%days)
-    if hours:
-        timecomponents.append("%dhrs"%hours)
-    if mins:
-        timecomponents.append("%dmins"%mins)
-    if secs:
-        timecomponents.append("%ds"%secs)
-    text += ", ".join(timecomponents)
-
-    text += " [%s]"%rand_fact['source']
-
-    resp = {'text':text}
+    rand_fact = retrieve_random_fact(False)
+    resp = generate_response(rand_fact)
     return jsonify(resp)
+
 
 
 
@@ -185,10 +240,17 @@ def get_cand_expenditures(candidate_nick):
 
     if committeeId:
         # try to pull data from redis
-        cachedJSON = redis.get(candidate_nick)
+        # cachedJSON = redis.get(candidate_nick)
+        response = cache.get_item(
+            Key={
+                'id': candidate_nick
+            }
+        )
 
         # if data found in redis, use it
-        if cachedJSON:
+        if 'Item' in response:
+            item = response['Item'];
+            cachedJSON = item['json']
             responseJSON = json.loads(cachedJSON)
         # if data not found in redis:
         else:
@@ -217,7 +279,16 @@ def get_cand_expenditures(candidate_nick):
             }
 
             # store API call results in redis for one hour
-            redis.setex(candidate_nick, json.dumps(responseJSON), redisDuration)
+            # redis.setex(candidate_nick, json.dumps(responseJSON), redisDuration)
+
+            expireTime = int(time.time())+(redisDuration*1000);
+            cache.put_item(
+                Item={
+                    'id': candidate_nick,
+                    'ttl': expireTime,
+                    'json': json.dumps(responseJSON)
+                }
+            )
     return responseJSON
 
 
@@ -230,18 +301,18 @@ def get_candidate(candidate_nick):
 
 
 # might as well have something on the home page, eh?
-@app.route('/')
-def index():
-    hits = redis.get('indexhits')
-
-    if (hits and int(hits) > 2):
-        strang = 'You know why you visited this time, but what do you think the other {} visits were about?'.format(int(hits) - 1)
-    else:
-        strang = 'My, how nice of you to visit.'
-
-    redis.incr('indexhits')
-
-    return strang
+#@app.route('/')
+#def index():
+#    hits = redis.get('indexhits')
+#
+#    if (hits and int(hits) > 2):
+#        strang = 'You know why you visited this time, but what do you think the other {} visits were about?'.format(int(hits) - 1)
+#    else:
+#        strang = 'My, how nice of you to visit.'
+#
+#    redis.incr('indexhits')
+#
+#    return strang
 
 
 if __name__ == "__main__":
