@@ -174,7 +174,7 @@ def generate_response (rand_fact):
     return resp
 
 
-@app.route('/expenditures/facts/random/oftheday', methods=['GET'])
+@app.route('/facts/random/oftheday', methods=['GET'])
 @cross_origin()
 def get_random_fact_oftheday():
     rand_fact = retrieve_random_fact(True)
@@ -182,7 +182,7 @@ def get_random_fact_oftheday():
     return jsonify(resp)
 
 
-@app.route('/expenditures/facts/random', methods=['GET'])
+@app.route('/facts/random', methods=['GET'])
 @cross_origin()
 def get_random_fact():
     # pick a random fact from the db
