@@ -109,3 +109,10 @@ ENV/
 [._]s[a-w][a-z]
 *.un~
 *~
+
+# Added by Steve for build script temp files
+.idea/
+**/bin
+**/lib
+**/include
+**/pip-selfcheck.json
