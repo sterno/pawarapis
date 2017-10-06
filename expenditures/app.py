@@ -166,11 +166,11 @@ def generate_response (rand_fact):
     prevNum = False
     timecomponents = []
     if days:
-        timecomponents.append("%d %s" % days % plural("day", days))
+        timecomponents.append("%d %s" % (days, plural("day", days)))
     if hours:
-        timecomponents.append("%d %s" % hours % plural("hr", hours))
+        timecomponents.append("%d%s" % (hours, plural("hr", hours)))
     if mins:
-        timecomponents.append("%d %s" % mins % plural("min", mins))
+        timecomponents.append("%d%s" % (mins, plural("min", mins)))
 
     text += ", ".join(timecomponents)
 
